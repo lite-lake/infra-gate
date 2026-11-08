@@ -1,0 +1,87 @@
+# 多阶段构建
+# 基础镜像可用构建参数覆盖（内部构建用镜像站加速，公开构建用 docker.io 默认值）
+ARG GOLANG_IMAGE=docker.io/library/golang:1.26.10-alpine3.23
+ARG ALPINE_IMAGE=docker.io/library/alpine:3.22.3
+FROM ${GOLANG_IMAGE} AS builder
+
+# 设置工作目录
+WORKDIR /app
+
+ARG LITE_BUILD_ID
+
+# 设置环境变量，使用国内Go镜像源
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,direct
+ENV GOSUMDB=sum.golang.google.cn
+ENV GO111MODULE=on
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+# 使用腾讯云镜像源
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.cloud.tencent.com/g' /etc/apk/repositories
+
+# 安装必要的工具
+RUN apk add --no-cache git ca-certificates tzdata
+
+# 复制go mod文件
+COPY go.mod go.sum ./
+
+# 下载依赖
+RUN go mod download
+
+# 复制源代码
+COPY . .
+
+# 构建应用
+RUN go build -ldflags="-w -s" -o infra-gate ./
+
+# 最终镜像
+FROM ${ALPINE_IMAGE}
+
+# 使用腾讯云镜像源
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.cloud.tencent.com/g' /etc/apk/repositories
+
+# 安装ca-certificates和tzdata
+RUN apk --no-cache add ca-certificates tzdata
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+
+ARG LITE_BUILD_ID
+ENV LITE_BUILD_ID=${LITE_BUILD_ID}
+
+# 创建非root用户
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
+
+# 设置工作目录
+WORKDIR /app
+
+# 从构建阶段复制二进制文件
+COPY --from=builder /app/infra-gate .
+
+# 复制 templates 目录
+COPY --from=builder /app/templates ./templates
+
+# 创建必要的目录
+RUN mkdir -p applogs configs cache && \
+    chown -R appuser:appgroup /app
+
+# CRS 金副本（内部PRD G3）：镜像内置只读 CRS，启动期网络不可用时兜底
+# 置于上方 chown 之后：保持 root:root 属主，对 appuser 只读，勿 chown 到 appuser
+COPY crs-golden/coreruleset-4.19.0-minimal.tar.gz /tmp/crs.tar.gz
+RUN echo "d50377c6eb7ead1da83ad428ba941f6c768234fb139679cb0a26663a767326f4  /tmp/crs.tar.gz" | sha256sum -c - \
+    && mkdir -p /app/crs/v4.19.0 \
+    && tar -xzf /tmp/crs.tar.gz -C /app/crs/v4.19.0 \
+    && rm /tmp/crs.tar.gz
+
+# pin 清单（内部PRD H2）：与 tarball 独立分发的期望 SHA256 清单，网关下载校验的
+# 唯一信任源（镜像自供哈希不参与判定）；与金副本同目录（golden_dir 根 /app/crs），
+# 同样保持 root:root 只读
+COPY crs-golden/pins.sha256 /app/crs/pins.sha256
+
+# 切换到非root用户
+USER appuser
+
+# 启动命令
+CMD ["./infra-gate"]

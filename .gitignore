@@ -1,0 +1,8 @@
+/infra-gate
+/infra-gate.exe
+/applogs
+/docs/coraza/
+/cache
+
+.ds_store
+configs/server.yml
