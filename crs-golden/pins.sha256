@@ -1,0 +1,11 @@
+# CRS pin 清单（H2，内部PRD §7.3）：与 CRS tarball 独立分发的期望 SHA256。
+# 每行格式：<version> <sha256>，sha256 为对应官方 coreruleset-<ver>-minimal.tar.gz
+# 原始字节摘要（与镜像站回源 tarball 同源，见 内部PRD §15.3 偏差 2）。
+# 网关只信本清单/配置 pin，不信镜像 API 返回的 sha256（镜像自签自验不可作为信任锚）。
+#
+# 再生成方式（与 crs-golden tarball 同源产出）：更新 crs-golden/ 下 tarball 后执行
+#   sha256sum crs-golden/coreruleset-<ver>-minimal.tar.gz
+# 并同步更新本文件、Dockerfile-prod / Dockerfile-dev 内 sha256sum -c 校验行与金副本
+# 解压目录名——三处必须同源一致。
+# 网关运行期读取路径：镜像内 /app/crs/pins.sha256（golden_dir 根，Dockerfile COPY 目标）。
+v4.19.0 d50377c6eb7ead1da83ad428ba941f6c768234fb139679cb0a26663a767326f4

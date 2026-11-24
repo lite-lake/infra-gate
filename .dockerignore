@@ -1,0 +1,43 @@
+.git
+.gitignore
+.drone.yml
+.cnb.yml
+docker-compose*.yml
+Makefile
+
+docs/
+*.md
+!templates/**/*.md
+
+applogs/
+cache/
+configs/
+
+*.log
+*.zip
+*.tar.gz
+
+# CRS 金副本 tarball 需打进镜像（内部PRD G3），对上方 *.tar.gz 反排除
+!crs-golden/**
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+infra-gate
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+coverage.out
+coverage.html

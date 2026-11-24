@@ -1,0 +1,256 @@
+# ==============================================================================
+# HTTP Server Configuration - HTTP服务器配置
+# ==============================================================================
+server:
+  # 服务器监听端口，默认8080
+  port: 80
+  # 是否启用Gzip压缩，默认false
+  g_zip_enabled: true
+  # 是否启用HTTP/2支持，默认false
+  # 注意：HTTP/2需要TLS支持，所以只有在配置了SSL证书的HTTPS端口上才会真正启用
+  http2_enabled: true
+  # 请求路径规范化强制（段级校验，非规范路径 400 终止）。nil=true 默认开，
+  # 显式 false 为逃生口（启动 Warn 一条）
+  # strict_path_check: true
+  # （Deprecated）全局 WSS 上游跳过证书校验——已迁移至 per-host hosts[].web_socket_insecure_skip；
+  # 兼容期作 per-host nil 时的缺省值，非零值启动 Warn
+  # websocket_insecure_skip: false
+
+# ==============================================================================
+# Logger Configuration - 日志配置
+# ==============================================================================
+logger:
+  # 日志级别：0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL
+  level: 0
+  # 是否启用控制台日志输出
+  enable_console: true
+  # 是否启用文件日志输出
+  enable_file: true
+  # 日志文件存储目录
+  log_dir: "./applogs"
+  # 日志归档目录
+  archive_dir: "./applogs/archive"
+  # 日志文件最大保留天数
+  max_retention_days: 30
+  # 是否启用控制台彩色输出
+  enable_color: true
+
+# ==============================================================================
+# Global WAF Configuration - 全局WAF配置
+# ==============================================================================
+waf:
+  # 是否启用WAF防护（总开关，false → 所有主机 WAF 一律不启用）
+  enabled: true
+  # 默认运行模式：block（阻断）| detect（仅检测）| disabled（停用）
+  default_mode: block
+
+  # IP白名单配置 - 白名单内的IP将绕过所有WAF检查
+  whitelist:
+    # 是否启用IP白名单功能
+    enabled: true
+    # IP段列表，支持CIDR格式和单个IP地址
+    ip_ranges: []
+      # - "127.0.0.1"           # 本地回环地址
+      # - "192.168.0.0/16"      # 私有网络段
+      # - "10.0.0.0/8"          # 私有网络段
+      # - "172.16.0.0/12"       # 私有网络段
+
+  # OWASP CRS (Core Rule Set) 配置
+  crs:
+    # 是否启用OWASP CRS规则集
+    enabled: true
+    # CRS版本号，如 v4.19.0, v4.1.5 等（pin 强制：清单外版本会被拒绝下载）
+    version: "v4.19.0"
+    # CRS下载配置
+    download:
+      # 下载超时时间（秒）
+      timeout: 60
+      # 备用HTTP代理配置（当正常下载超时时使用）
+      proxy:
+        # 是否启用代理
+        enabled: true
+        # 代理服务器地址，格式：http://proxy.example.com:8080
+        url: "http://proxy.example.com:7890"
+        # 代理用户名（可选）
+        username: ""
+        # 代理密码（可选）
+        password: ""
+
+  # 自定义规则配置
+  custom:
+    # 是否启用自定义规则文件
+    enabled: true
+    # 自定义规则文件路径，相对于项目根目录
+    rules_file: "./configs/custom-rules.conf"
+
+  # WAF调试配置
+  debug:
+    # WAF日志级别：0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL
+    log_level: 3
+    # WAF日志输出路径，/dev/stdout 表示输出到控制台
+    log_file: "/dev/stdout"
+
+# ==============================================================================
+# Global SSL Configuration - 全局SSL配置
+# ==============================================================================
+ssl:
+  # 本地证书配置
+  local:
+    # 是否启用本地证书模式
+    enabled: false
+    # 本地证书存储目录
+    cert_dir: "configs/cert"
+
+  # 远程证书配置
+  remote:
+    # 是否启用远程证书获取
+    enabled: true
+    # 远程证书API端点
+    # 支持单点配置（字符串）或多点配置（列表），多点时随机选择一个，失败自动切换下一个
+    endpoint: "https://cert-api.example.com/cert/json"
+    # 多端点配置示例：
+    # endpoint:
+    #   - "https://cert-api1.example.com/cert/json"
+    #   - "https://cert-api2.example.com/cert/json"
+    # 是否启用自动更新
+    auto_update: true
+    # 更新检查时间窗口，格式: "HH:MM-HH:MM"
+    update_check_window: "00:00-00:59"
+    # API Key 用于身份验证（可选）
+    # api_key: "your-api-key-here"
+
+# ==============================================================================
+# Notification Configuration - 生命周期事件通知配置
+# ==============================================================================
+notification:
+  # 是否启用通知
+  enabled: false
+  # Webhook URL（企业微信群机器人）
+  # local/dev: https://notify.dev.example.com/webhook/wecom/lite-lake-service-event
+  # prod: https://notify.example.com/webhook/wecom/lite-lake-service-event
+  url: "https://notify.dev.example.com/webhook/wecom/lite-lake-service-event"
+  # HTTP 超时时间
+  timeout: "5s"
+
+# ==============================================================================
+# Virtual Hosts Configuration - 虚拟主机配置
+# ==============================================================================
+hosts:
+  # 默认主机配置：匹配所有未明确配置的主机
+  - name: "*" # 特殊主机名，匹配所有主机
+    port: 80 # 监听端口
+    text: "default backend" # 无后端时的默认响应文本
+    # 注意：未配置waf段，将使用全局WAF配置
+
+  # 生产环境主机配置 - 仅HTTP
+  - name: http.local.litefate.com # 虚拟主机名称
+    port: 80 # 监听端口
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com # 后端服务1
+      - https://www.baidu.com # 后端服务2
+    # 健康检查配置
+    health_check: "/" # 健康检查路径
+    health_check_interval: 30s # 健康检查间隔
+    health_check_timeout: 10s # 健康检查超时时间
+    health_check_enabled: true # 是否启用健康检查（默认true）
+
+  # 生产环境主机配置 - HTTPS with 本地证书
+  - name: local.litefate.com # 虚拟主机名称
+    port: 80 # HTTP端口
+    ssl_port: 443 # HTTPS端口
+    # SSL证书配置 - 覆盖全局配置
+    ssl_config:
+      # 本地证书模式
+      local:
+        enabled: true
+        cert_dir: "configs/cert/local.litefate.com"
+      # 远程证书模式（备用）
+      remote:
+        enabled: false
+        endpoint: "https://cert-api.example.com/cert/json"
+        auto_update: true
+        update_check_window: "00:00-00:59"
+        # API Key 用于身份验证（可选）
+        # api_key: "your-api-key-here"
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com # 后端服务1
+      - https://www.baidu.com # 后端服务2
+    # 健康检查配置
+    health_check: "/" # 健康检查路径
+    health_check_interval: 30s # 健康检查间隔
+    health_check_timeout: 10s # 健康检查超时时间
+    health_check_enabled: true # 是否启用健康检查（默认true）
+
+  # 生产环境主机配置 - HTTPS with 远程证书
+  - name: remote.local.litefate.com # 虚拟主机名称
+    port: 80 # HTTP端口
+    ssl_port: 443 # HTTPS端口
+    # SSL证书配置 - 覆盖全局配置
+    ssl_config:
+      # 本地证书模式（备用）
+      local:
+        enabled: false
+        cert_dir: "configs/cert/remote.local.litefate.com"
+      # 远程证书模式
+      remote:
+        enabled: true
+        # 支持单点配置（字符串）或多点配置（列表），多点时随机选择一个，失败自动切换下一个
+        endpoint: "https://cert-api.example.com/cert/json"
+        # 多端点配置示例：
+        # endpoint:
+        #   - "https://cert-api1.example.com/cert/json"
+        #   - "https://cert-api2.example.com/cert/json"
+        auto_update: true
+        update_check_window: "00:00-00:59"
+        # API Key 用于身份验证（可选）
+        # api_key: "your-api-key-here"
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com # 后端服务1
+      - https://www.baidu.com # 后端服务2
+    # 健康检查配置
+    health_check: "/" # 健康检查路径
+    health_check_interval: 30s # 健康检查间隔
+    health_check_timeout: 10s # 健康检查超时时间
+    health_check_enabled: true # 是否启用健康检查（默认true）
+
+  # 生产环境主机配置 - HTTPS 使用全局SSL配置
+  - name: global.local.litefate.com # 虚拟主机名称
+    port: 80 # HTTP端口
+    ssl_port: 443 # HTTPS端口
+    # 注意：未配置ssl_config，将使用全局SSL配置
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com # 后端服务1
+      - https://www.baidu.com # 后端服务2
+    # 健康检查配置
+    health_check: "/" # 健康检查路径
+    health_check_interval: 30s # 健康检查间隔
+    health_check_timeout: 10s # 健康检查超时时间
+    health_check_enabled: true # 是否启用健康检查（默认true）
+
+  # 生产环境主机配置 - HTTPS 覆盖部分全局配置
+  - name: partial.local.litefate.com # 虚拟主机名称
+    port: 80 # HTTP端口
+    ssl_port: 443 # HTTPS端口
+    # SSL证书配置 - 仅覆盖部分配置，其他使用全局配置
+    ssl_config:
+      # 仅覆盖远程证书的更新窗口
+      remote:
+        enabled: true
+        endpoint: "https://cert-api.example.com/cert/json"
+        auto_update: true
+        update_check_window: "01:00-01:59" # 不同的更新时间窗口
+        # API Key 用于身份验证（可选）
+        # api_key: "your-api-key-here"
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com # 后端服务1
+      - https://www.baidu.com # 后端服务2
+    # 健康检查配置
+    health_check: "/" # 健康检查路径
+    health_check_interval: 30s # 健康检查间隔
+    health_check_timeout: 10s # 健康检查超时时间
+    health_check_enabled: true # 是否启用健康检查（默认true）

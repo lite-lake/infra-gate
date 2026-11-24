@@ -1,0 +1,331 @@
+# =============================================================================
+# HTTP Server Configuration - HTTP服务器配置
+# =============================================================================
+server:
+  # 服务器监听端口，默认8080
+  port: 8080
+  # 是否启用Gzip压缩，默认false
+  g_zip_enabled: false
+  # Gzip压缩级别: 1(BestSpeed) ~ 9(BestCompression), 默认6
+  g_zip_level: 6
+  # Gzip最小压缩大小(字节)，小于此值不压缩，默认0(立即压缩)
+  g_zip_min_size: 0
+  # 可信代理网段 - 仅当直连对端命中这些网段时，才解析其带来的 X-Forwarded-For 链
+  # （用于二级网关链路，如 mesh 内网 gate 信任上一跳公网 gate 的 mesh 出口网段）
+  # 支持单个IP或CIDR格式，例如：
+  # - "10.72.0.21"       # 单个IPv4地址（上一跳 gate 的 mesh IP）
+  # - "10.72.0.0/24"     # 精确网段（EasyTier mesh prod；dev 为 10.71.0.0/24）
+  # - "::1"              # 单个IPv6地址
+  # 如果不配置，将不信任任何X-Forwarded-*头，直接使用RemoteAddr（直连对端）作为客户端IP
+  #
+  # v1.1 定位说明：trusted_proxies 不再影响缺省 host 的转发头重建（缺省 host 恒为
+  # 边缘语义：删头重建、XFF 单值=直连对端）；它仅作为 forwarded_for=append host
+  # （mesh 域名）的追加门槛，以及 WAF/blacklist/访问日志解析真实客户端 IP 的网段依据。
+  #
+  # 警告（内部PRD 决策 D4）：
+  # 1. 公网边缘 gate 必须保持为空！一旦配置，任何客户端都能用伪造 XFF 头冒充任意来源 IP
+  # 2. 不要照抄整个 RFC1918 三段（10/8、172.16/12、192.168/16），只信任上一跳实际所在的精确网段
+  # 3. 0.0.0.0/0 与 ::/0（trust-all）会被启动校验直接拒绝
+  # trusted_proxies:
+  #   - "10.72.0.0/24"
+  # 请求路径规范化强制（段级校验，非规范路径 400 终止）。nil=true 默认开，
+  # 显式 false 为逃生口（启动 Warn 一条）
+  # strict_path_check: true
+  #
+  # ── F1 资源治理（内部PRD §4.1/§5；全部安全默认，不配置即生效）──
+  # resource_governance:
+  #   # 总开关，缺省 true；显式 false 为逃生口（启动 Warn——单客户端可打爆网关并发与内存）
+  #   enabled: true
+  #   # 全局 in-flight 上限（含 WS 连接存活期）
+  #   max_concurrent_requests: 4096
+  #   # per-IP in-flight 上限
+  #   per_ip_concurrent_requests: 64
+  #   # per-IP 维度豁免网段（mesh/监控级联必须配上游网段，全局上限仍生效）
+  #   per_ip_whitelist: ["10.72.0.0/24"]
+  #   # per-IP 速率（token/秒）与突发桶容量
+  #   per_ip_rate: 50
+  #   per_ip_burst: 100
+  #   # WS 连接三级上限（全局/per-host/per-IP）
+  #   ws_max_global: 1024
+  #   ws_max_per_host: 256
+  #   ws_max_per_ip: 16
+  #
+  # 请求头字节上限（F1.6：1MB 收紧为 32KB 缺省；HTTP/2 自动对齐）
+  # max_header_bytes: 32768
+  # 上游单 host 连接池上限（F1c：原 0=无上限，缺省 256；LLM host 建议 512+ 经 per-host 覆盖）
+  # upstream_max_conns_per_host: 256
+  # 等待后端响应头时长（F1c：缺省 1800s 维持零回归；per-host 可收紧）
+  # upstream_response_header_timeout: 1800s
+  # trusted_proxies 宽度红线（F2.5）：IPv4 < /8（IPv6 < /48）拒绝启动；
+  # < /24（IPv6 < /64）启动 Warn。显式 true 放行超宽网段（降为 Warn）
+  # trusted_proxies_allow_wide: false
+  # （Deprecated）全局 WSS 上游跳过证书校验——已迁移至 per-host hosts[].web_socket_insecure_skip；
+  # 兼容期作 per-host nil 时的缺省值，非零值启动 Warn
+  # websocket_insecure_skip: false
+
+# =============================================================================
+# Logger Configuration - 日志配置
+# =============================================================================
+logger:
+  # 日志级别：0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL
+  level: 1
+  # 是否启用控制台日志输出
+  enable_console: true
+  # 是否启用文件日志输出
+  enable_file: true
+  # 日志文件存储目录
+  log_dir: "./applogs"
+  # 日志归档目录
+  archive_dir: "./applogs/archive"
+  # 日志文件最大保留天数
+  max_retention_days: 30
+  # 是否启用控制台彩色输出
+  enable_color: true
+
+# =============================================================================
+# Global WAF Configuration - 全局WAF配置
+# =============================================================================
+waf:
+  # 是否启用WAF防护（总开关，false → 所有主机 WAF 一律不启用）
+  enabled: true
+  # 默认运行模式：
+  # block（默认）：命中规则时阻断请求（返回403）
+  # detect：仅检测模式，命中规则时仅记录日志和统计，不阻断请求
+  # disabled：停用模式，默认不挂载 WAF 中间件
+  default_mode: block
+  
+  # IP白名单配置 - 白名单内的直连对端将绕过所有WAF检查
+  # F2.4（内部PRD §4.2.4，决策 D4）：按**直连对端**（TCP RemoteAddr）评估——
+  # 语义为「边缘连接 ACL」（谁能连到网关），与 allowed_ips/admin 同口径；
+  # trusted_proxies 内伪造 XFF 无法命中。样例默认仅保留回环地址。
+  whitelist:
+    # 是否启用IP白名单功能
+    enabled: true
+    # IP段列表，支持CIDR格式和单个IP地址（按直连对端评估）
+    ip_ranges:
+      - "127.0.0.1"           # 本地回环地址
+  
+  # OWASP CRS (Core Rule Set) 配置
+  crs:
+    # 是否启用OWASP CRS规则集
+    enabled: true
+    # CRS版本号，如 v4.19.0, v4.1.5 等
+    version: "v4.19.0"
+    # CRS下载配置
+    download:
+      # 下载超时时间（秒）
+      timeout: 60
+      # CRS 规则镜像服务地址（可选）
+      # 设置后，CRS Manager 将从镜像服务下载 CRS 规则，不再直连 GitHub
+      # 镜像服务需部署在可访问 GitHub 的节点
+      # 支持单点配置（字符串）或多点配置（列表），多点时随机选择一个，失败自动切换下一个
+      # H2（内部PRD）：仅允许 https；明文 http 镜像启动校验直接报错，
+      # 内网明文镜像需显式配置 mirror_allow_insecure_http: true 放行（启动 Warn）
+      # mirror_url: "https://crsmirror.example.com"
+      # mirror_url:
+      #   - "https://crsmirror1.example.com"
+      #   - "https://crsmirror2.example.com"
+      # H2：明文 http 镜像显式放行开关（仅限内网可控镜像），缺省 false（仅 https）
+      # mirror_allow_insecure_http: false
+      # H2：期望 tarball sha256 pin（最高优先，优先于镜像内 /app/crs/pins.sha256 清单）。
+      # 配置与清单都无对应版本 → 拒绝下载（完整性优先，走 failure_policy 处置）；
+      # 默认版本 v4.19.0 已随镜像内置 pins 清单，无需配置。版本升级流程 = 更新 pin
+      # （重建镜像或此处下发新版本哈希）
+      # pinned_sha256: "d50377c6eb7ead1da83ad428ba941f6c768234fb139679cb0a26663a767326f4"
+      # 备用HTTP代理配置（当正常下载超时时使用）
+      # 注意：设置 mirror_url 后，代理可关闭（镜像服务自身负责代理）
+      proxy:
+        # 是否启用代理
+        enabled: true
+        # 代理服务器地址，格式：http://proxy.example.com:8080
+        url: "http://proxy.example.com:7890"
+        # 代理用户名（可选）
+        username: ""
+        # 代理密码（可选）
+        password: ""
+  
+  # 自定义规则配置
+  custom:
+    # 是否启用自定义规则文件
+    enabled: true
+    # 自定义规则文件路径，相对于项目根目录
+    rules_file: "./configs/custom-rules.conf"
+  
+  # WAF调试配置
+  debug:
+    # WAF日志级别：0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=FATAL
+    log_level: 3
+    # WAF日志输出路径，/dev/stdout 表示输出到控制台
+    log_file: "/dev/stdout"
+
+# =============================================================================
+# Global IP Blacklist Configuration - 全局 IP 黑名单配置
+# 定时同步外部威胁情报（默认 USTC blackip）到本地内存，在请求链最前端拦截已知恶意 IP
+# =============================================================================
+blacklist:
+  # 是否启用 IP 黑名单（总开关，false → 所有主机不做黑名单检查）
+  enabled: true
+  # 默认运行模式：
+  # block（默认）：命中黑名单返回 403（blocked.html 拦截页，与 WAF 拦截页统一）
+  # detect：仅记录事件与统计，不拦截（灰度观察用）
+  # disabled：停用（主要用于下方 host 级覆盖）
+  # 首期上线建议先 detect，观察 3~7 天无误杀后再切 block
+  default_mode: block
+  # 数据源列表（纯文本列表，每行一条 IP 或 CIDR）
+  sources:
+    - name: ustc
+      url: "https://blackip.ustc.edu.cn/list.php?txt"
+  # 定时刷新间隔，最低 30m，0/缺省 = 默认 1h（附加随机抖动错峰拉取）
+  update_interval: 1h
+  # 单次拉取超时，0/缺省 = 默认 60s，上限 5m
+  timeout: 60s
+  # 拉取代理（结构与 waf.crs.download.proxy 一致，直连可达时保持关闭）
+  proxy:
+    enabled: false
+    url: ""
+    username: ""
+    password: ""
+  # 本地豁免 IP/CIDR 列表（最高优先级，豁免办公出口/监控探针等；私有段无需配置，见 ignore_private_ips）
+  whitelist:
+    - "203.0.113.10"
+  # 私有/保留网段一律不拦截（应对上游 feed 混入保留网段，如 169.254.0.0/16），缺省 true
+  ignore_private_ips: true
+  # 明文 http 数据源放行开关（缺省 false，仅 https；明文 http 源启动校验直接报错，
+  # 内网明文 feed 需显式 true 放行）
+  # allow_http_source: false
+  # 防追加式投毒的增长上限基数（缺省 200000）：新 feed 去重条目数超过
+  # max(2×上次成功条目数, max_entries) 时拒绝替换、保留旧表
+  # max_entries: 200000
+  #
+  # ── F9 形态围栏（内部PRD §4.9/§5；全部安全默认，不配置即生效）──
+  # 调参事实锚（2026-11 实测 USTC feed）：覆盖 0.43%、最粗 /12 与 /29；
+  # 单条封锁最长 ~3 天。
+  # min_entries: 1000          # 防污染下限（去重口径）；显式 0 = 禁用
+  # cidr_min_prefix_v4: 12     # 单条 v4 CIDR 前缀下限（跳过+计数；/12 独立伤害上限 0.024%）
+  # cidr_min_prefix_v6: 24     # 单条 v6 CIDR 前缀下限
+  # max_v4_coverage_percent: 2.0  # 聚合覆盖率上限（拒整表保旧表；现状 0.433% 留 4.6 倍头寸）
+  # max_v6_cidr_entries: 1000 # v6 CIDR 条目独立上限（拒整表）
+  # cache_ttl: 72h             # 缓存 mtime 判龄（对齐单条封锁 ~3 天语义）
+  # staleness_threshold: 6h    # 表龄告警阈值（≈6 个刷新周期，超龄 blacklist_stale 通知）
+
+# =============================================================================
+# Notification Configuration - 生命周期事件通知配置
+# =============================================================================
+notification:
+  # 是否启用通知
+  enabled: false
+  # Webhook URL（企业微信群机器人）
+  # 支持单点配置（字符串）或多点配置（列表），多点时随机选择一个，失败自动切换下一个
+  # local/dev: https://notify.dev.example.com/webhook/wecom/lite-lake-service-event
+  # prod: https://notify.example.com/webhook/wecom/lite-lake-service-event
+  url: "https://notify.dev.example.com/webhook/wecom/lite-lake-service-event"
+  # 多端点配置示例：
+  # url:
+  #   - "https://notify1.example.com/webhook/demo"
+  #   - "https://notify2.example.com/webhook/wecom/lite-lake-service-event"
+  # HTTP 超时时间
+  timeout: "5s"
+
+# =============================================================================
+# Virtual Hosts Configuration - 虚拟主机配置
+# =============================================================================
+hosts:
+  # 默认主机配置：匹配所有未明确配置的主机
+  - name: "*"  # 特殊主机名，匹配所有主机
+    port: 80   # 监听端口
+    text: "default backend"  # 无后端时的默认响应文本
+    health_check_enabled: false  # 纯 text host 无后端，禁用健康检查
+    # 注意：未配置waf段，将使用全局WAF配置
+    # 注意：未配置g_zip_enabled段，将使用服务器配置
+
+  # 生产环境主机配置
+  - name: local.litefate.com  # 虚拟主机名称
+    port: 80  # 监听端口
+    # 后端服务列表，支持多个后端，使用随机负载均衡
+    backend:
+      - https://www.baidu.com  # 后端服务1
+      - https://www.baidu.com  # 后端服务2
+    # 健康检查配置
+    health_check: "/"           # 健康检查路径
+    health_check_interval: 10s  # 健康检查间隔
+    health_check_timeout: 5s    # 健康检查超时时间
+    health_check_enabled: true  # 是否启用健康检查（默认true）
+    # 是否启用Gzip压缩（覆盖服务器配置）
+    g_zip_enabled: true
+    # 是否保留原始Host头（默认false，即重写为后端主机名）
+    # true: 保持客户端请求的原始Host头，适用于后端依赖Host头进行虚拟主机路由的场景
+    # false: 将Host头重写为后端服务器的主机名，这是反向代理的常规行为
+    preserve_host_header: false
+    # per-host WSS 上游跳过证书校验（nil=继承全局，per-host 显式配置优先；显式 true 启动 Warn）
+    # web_socket_insecure_skip: false
+    # 强制覆盖 /robots.txt 拒绝所有搜索引擎爬虫（网关层直接返回，不转发后端）
+    # robots_deny_all: true
+    
+    # 虚拟主机级别WAF配置：覆盖全局配置的特定选项
+    waf:
+      default_mode: block  # 阻断模式（覆盖全局配置）
+      whitelist:
+        enabled: true       # 启用IP白名单
+        ip_ranges:         # 继承全局白名单配置
+          - "127.0.0.1"           # 本地回环地址
+          - "192.168.0.0/16"      # 私有网络段
+          - "10.0.0.0/8"          # 私有网络段
+          - "172.16.0.0/12"       # 私有网络段
+      crs:
+        enabled: true       # 启用OWASP CRS
+        version: "v4.19.0"   # 使用指定版本
+      custom:
+        enabled: false      # 禁用自定义规则（覆盖全局配置）
+      debug:
+        log_level: 2        # 降低日志级别（覆盖全局配置）
+
+  # 测试环境主机配置：完全禁用WAF
+  - name: test.example.com  # 测试主机名称
+    port: 80
+    text: "WAF disabled for testing"  # 响应文本
+    health_check_enabled: false  # 纯 text host 无后端，禁用健康检查
+    # 是否启用Gzip压缩（覆盖服务器配置）
+    g_zip_enabled: false
+    waf:
+      default_mode: disabled  # 完全停用 WAF 防护
+    # 虚拟主机级 IP 黑名单覆盖示例（不设置则继承全局 blacklist 配置）：
+    # blacklist:
+    #   default_mode: disabled  # 该主机关闭黑名单检查（可选 block / detect / disabled）
+
+  # 新上线服务：仅检测模式，观察一段时间后再切换为阻断
+  - name: new-service.example.com
+    port: 80
+    backend:
+      - http://localhost:3000
+    health_check: "/"
+    health_check_interval: 10s
+    health_check_timeout: 5s
+    waf:
+      default_mode: detect  # 仅检测不阻断，观察是否有误报
+
+  # 密码门主机示例（内部PRD）：启用 auth 后该 host 所有路径默认需持有效
+  # 会话，未认证浏览器导航 302 到内嵌登录页、API/WS 升级 401；登录成功发放 JWT
+  # cookie（ltgate_auth，HttpOnly+SameSite=Lax，HTTPS 下带 Secure），业务应用零感知。
+  # 检查点位于 WAF/代理之前，未认证请求不进 WAF、不触后端。
+  - name: gated.example.com
+    port: 80
+    backend:
+      - http://localhost:3000
+    health_check: "/"
+    health_check_interval: 10s
+    health_check_timeout: 5s
+    auth:
+      # 访问密码（必填，缺省时启动校验直接报错）；gate.yaml 明文落盘（决策 D6），
+      # 修改密码即该 host 全部旧会话立即失效（HMAC key 由密码派生）
+      password: "change-me"
+      # 登录态有效期（Go duration），缺省 24h
+      ttl: 24h
+      # 登录失败锁定阈值（缺省 5 次）与锁定时长（缺省 15m）；触发锁定的跳变沿发
+      # auth_lockout 全局告警（每个锁定会话至多一条）
+      # max_failures: 5
+      # lock_duration: 15m
+      # 免认证路径（段边界匹配：/admin 命中 /admin、/admin/、/admin/x，不命中 /adminX；
+      # 尾斜杠条目运行时归一），满足监控探测等场景；不设置 = 全站拦截
+      public_paths:
+        - /healthz
+
