@@ -18,7 +18,7 @@ func TestWSDialAddr(t *testing.T) {
 		{"wss scheme 无端口补 443", "wss://mesh-app.node1.example.net", "mesh-app.node1.example.net:443"},
 		{"ws 无端口补 80", "http://svc.example.local", "svc.example.local:80"},
 		{"ws scheme 无端口补 80", "ws://svc.example.local", "svc.example.local:80"},
-		{"ws 显式端口原样", "http://uptime-kuma-node1:3001", "uptime-kuma-node1:3001"},
+		{"ws 显式端口原样", "http://monitor-node1:3001", "monitor-node1:3001"},
 		{"IPv6 显式端口原样", "https://[::1]:443", "[::1]:443"},
 		{"IPv6 无端口补 443", "wss://[::1]", "[::1]:443"},
 	}

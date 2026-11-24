@@ -21,9 +21,10 @@ import (
 //   - 逐层解码：gzip 走既有逻辑；deflate 用标准库（zlib 失败回落 raw flate，
 //     Caddy 同款兼容两种服务器形态）；
 //   - br / zstd / 未知编码：命中 policy.AllowedContentEncodings → 原样透传 +
-//     Debug 日志（不进 WAF 正文检测，放行清单显式声明）；未命中 → 415 fail-close
-//     （body 写明不支持的编码名）。浏览器与常规 API 客户端几乎不发压缩请求体，
-//     现网无压缩请求体业务（D5：br/zstd 解压依赖不引入）；
+//     Debug 日志（不进 WAF 正文检测，放行清单显式声明）；policy.PassthroughUnknown
+//     （WAF 未对该 host 生效，无正文检测）→ 一律原样透传；其余未命中 → 415
+//     fail-close（body 写明不支持的编码名）。浏览器与常规 API 客户端几乎不发
+//     压缩请求体，现网无压缩请求体业务（D5：br/zstd 解压依赖不引入）；
 //   - gzip 伪装路径维持现状 fail-close（非 gzip 数据声明 gzip → 400）。
 //
 // F1.5（内部PRD §4.1.5）：解压窗口上限经 policy.MaxDecompressedBytes
@@ -47,8 +48,9 @@ func DecompressRequestHandler(h http.Handler, policy DecompressPolicy) http.Hand
 			case "gzip", "deflate", "x-gzip":
 				// 可解压编码，继续
 			default:
-				if containsFold(policy.AllowedContentEncodings, enc) {
-					// F5.2：显式放行（原样透传，WAF 正文检测对该 host 明确豁免）
+				// WAF 未生效（无正文检测）→ 原样透传，不参与编码策略；
+				// 否则命中放行清单同样透传，未命中 fail-close 415。
+				if policy.PassthroughUnknown || containsFold(policy.AllowedContentEncodings, enc) {
 					h.ServeHTTP(w, r)
 					return
 				}
@@ -135,12 +137,22 @@ func DecompressRequestHandler(h http.Handler, policy DecompressPolicy) http.Hand
 	})
 }
 
+// ContentEncodingAWSChunked AWS SDK 流式上传的传输编码（boto3 ≥1.36 / aws-sdk
+// 默认 checksum trailer 使用）。它是分块帧格式而非压缩编码，SC 侧原生解码；
+// 网关在 WAF 未启用或 host 关闭正文扫描时应原样透传，不得按未知编码 415。
+const ContentEncodingAWSChunked = "aws-chunked"
+
 // DecompressPolicy F5 解压策略（由 server 按 host 合并后注入）
 type DecompressPolicy struct {
 	// MaxDecompressedBytes 解压后请求体上限（F1.5；<=0 取 1MB 缺省）
 	MaxDecompressedBytes int
-	// AllowedContentEncodings 放行透传的编码（取值 ∈ {br, zstd}，config 已校验）
+	// AllowedContentEncodings 放行透传的编码（br/zstd/aws-chunked，config 已校验；
+	// request_body_access=false 的 host 由 server 自动追加 aws-chunked）
 	AllowedContentEncodings []string
+	// PassthroughUnknown WAF 未对该 host 生效时置 true：此时不存在正文检测，
+	// 编码策略失去意义，未知编码一律原样透传（避免把 aws-chunked 等正常
+	// 上传帧误杀成 415）。WAF 生效时保持 fail-close。
+	PassthroughUnknown bool
 }
 
 // parseContentEncodings 解析 Content-Encoding 为 token 列表：

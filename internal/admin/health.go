@@ -20,7 +20,7 @@ type hostHealthInfo struct {
 }
 
 // handleHealth 存活探针（免认证）：管理面板进程可响应即返回 ok
-// 与 lite-backend /api/health 对齐，供 Uptime Kuma / k8s liveness 等免认证探测使用
+// 与 lite-backend /api/health 对齐，供 OC 统一监控 / k8s liveness 等免认证探测使用
 func (a *AdminServer) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, a.baseHealthPayload("ok"))
 }

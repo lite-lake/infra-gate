@@ -50,8 +50,11 @@ type ServerConfig struct {
 	UpstreamMaxConnsPerHost int `yaml:"upstream_max_conns_per_host"`
 	// UpstreamResponseHeaderTimeout F1c：等待后端响应头时长（缺省维持 1800s 零回归，
 	// D1）；per-host 经 hosts[].upstream_response_header_timeout 收紧
-	UpstreamResponseHeaderTimeout time.Duration   `yaml:"upstream_response_header_timeout"`
-	WebSocket                     WebSocketConfig `yaml:"websocket"`
+	UpstreamResponseHeaderTimeout time.Duration `yaml:"upstream_response_header_timeout"`
+	// ReadTimeout 整请求（含 body）读超时缺省值（Slowloris 防护）：
+	// <=0 取 DefaultServerReadTimeout（120s）；上传类 host 经 hosts[].read_timeout 覆盖
+	ReadTimeout time.Duration   `yaml:"read_timeout"`
+	WebSocket   WebSocketConfig `yaml:"websocket"`
 	// H1：请求路径规范化强制（段级校验，非规范路径 400 终止）。nil = true（默认开）；
 	// 显式 false 为逃生口（启动 Warn 一条，内部PRD §7.1）
 	StrictPathCheck *bool `yaml:"strict_path_check,omitempty"`
@@ -108,6 +111,9 @@ const (
 	// DefaultUpstreamResponseHeaderTimeout 等待后端响应头时长（F1c；维持既有
 	// 1800s 硬编码现值零回归，D1）
 	DefaultUpstreamResponseHeaderTimeout = 1800 * time.Second
+	// DefaultServerReadTimeout 整请求（含 body）读超时缺省值：
+	// 保留既有 120s Slowloris 防护；上传 host 经 per-host read_timeout 独立放宽
+	DefaultServerReadTimeout = 120 * time.Second
 	// DefaultMaxDecompressedRequestBody gzip/deflate 解压后请求体上限（F1.5：
 	// 单一事实源，与 WAF SecRequestBodyLimit 1MB 对齐；原 10MB 收紧。WAF-on
 	// host 行为零变化——超 1MB 本来就被 Coraza 413）
@@ -208,6 +214,14 @@ func (c *ServerConfig) GetEffectiveMaxHeaderBytes() int {
 		return DefaultMaxHeaderBytes
 	}
 	return c.MaxHeaderBytes
+}
+
+// GetEffectiveReadTimeout 返回整请求（含 body）读超时缺省值：<=0 取缺省 120s
+func (c *ServerConfig) GetEffectiveReadTimeout() time.Duration {
+	if c.ReadTimeout <= 0 {
+		return DefaultServerReadTimeout
+	}
+	return c.ReadTimeout
 }
 
 // GetEffectiveUpstreamMaxConnsPerHost 返回上游单 host 连接上限：<=0 取缺省 256
@@ -623,9 +637,21 @@ type HostConfig struct {
 	// 仅服务 body 扫描关闭的上传 host 放宽
 	MaxDecompressedRequestBody int `yaml:"max_decompressed_request_body,omitempty"`
 	// AllowedContentEncodings F5（内部PRD §4.5）：per-host 编码放行清单，
-	// 取值 ∈ {br, zstd}（fail-fast）；命中则原样透传（不进 WAF 正文检测）。
+	// 取值 ∈ {br, zstd, aws-chunked}（fail-fast）；命中则原样透传（不进 WAF 正文检测）。
 	// 空（缺省）= br/zstd/未知编码一律 415 fail-close。非空启动 Warn
 	AllowedContentEncodings []string `yaml:"allowed_content_encodings,omitempty"`
+	// ReadTimeout 该 host 的整请求（含 body）读超时覆盖：
+	// nil 或 <=0 继承 server 级（缺省 120s）。上传 host 设为 30m 避免大文件误杀，
+	// 其它 host 不配置即维持 Slowloris 防护
+	ReadTimeout *time.Duration `yaml:"read_timeout,omitempty"`
+}
+
+// GetEffectiveReadTimeout 返回该 host 的整请求读超时：nil 或 <=0 继承 server 级缺省
+func (h *HostConfig) GetEffectiveReadTimeout(serverDefault time.Duration) time.Duration {
+	if h.ReadTimeout == nil || *h.ReadTimeout <= 0 {
+		return serverDefault
+	}
+	return *h.ReadTimeout
 }
 
 // GetEffectiveUpstreamMaxConnsPerHost 返回该 host 的上游连接上限：nil 继承 server 级
@@ -1021,11 +1047,13 @@ func (c *Config) normalizeHostNames() {
 	}
 }
 
-// ContentEncodingBR / ContentEncodingZstd F5 放行清单仅有的合法取值
-// （br/zstd 解压依赖不引入，D5——放行 = 原样透传不进 WAF 正文检测）
+// ContentEncodingBR / ContentEncodingZstd / ContentEncodingAWSChunked
+// F5 放行清单合法取值（br/zstd 解压依赖不引入，D5——放行 = 原样透传不进
+// WAF 正文检测；aws-chunked 为 AWS SDK 分块上传帧，SC 原生解码）
 const (
-	ContentEncodingBR   = "br"
-	ContentEncodingZstd = "zstd"
+	ContentEncodingBR         = "br"
+	ContentEncodingZstd       = "zstd"
+	ContentEncodingAWSChunked = "aws-chunked"
 )
 
 // boolDeref 指针布尔解引用（nil = false）
@@ -1236,11 +1264,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("hosts[%d].name %q contains non-ASCII characters; use the punycode/ASCII form (IDNA mapping is intentionally not applied)", i, host.Name)
 		}
 
-		// F5（内部PRD §4.5.2）：allowed_content_encodings 取值 ∈ {br, zstd}
+		// F5（内部PRD §4.5.2）：allowed_content_encodings 取值 ∈ {br, zstd, aws-chunked}
 		//（fail-fast；其余编码不在放行白名单内，配置即错误）
 		for _, enc := range host.AllowedContentEncodings {
-			if enc != ContentEncodingBR && enc != ContentEncodingZstd {
-				return fmt.Errorf("hosts[%d] (%s): allowed_content_encodings entry %q must be %q or %q", i, host.Name, enc, ContentEncodingBR, ContentEncodingZstd)
+			if enc != ContentEncodingBR && enc != ContentEncodingZstd && enc != ContentEncodingAWSChunked {
+				return fmt.Errorf("hosts[%d] (%s): allowed_content_encodings entry %q must be %q, %q or %q", i, host.Name, enc, ContentEncodingBR, ContentEncodingZstd, ContentEncodingAWSChunked)
 			}
 		}
 

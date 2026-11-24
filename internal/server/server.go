@@ -987,10 +987,10 @@ func (s *Server) startHTTPServer(port int, hosts []config.HostConfig) error {
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           engine,
-		ReadHeaderTimeout: 60 * time.Second,   // Slowloris 防护：限制读取请求头的时间
-		ReadTimeout:       120 * time.Second,  // P2-42: 限制读取完整请求的时间（含 body）
-		WriteTimeout:      1800 * time.Second, // P2-42: 限制写响应的时间（兼容长响应如 SSE，支持 30 分钟流式输出）
-		IdleTimeout:       120 * time.Second,  // 回收空闲 keep-alive 连接
+		ReadHeaderTimeout: 60 * time.Second,                          // Slowloris 防护：限制读取请求头的时间
+		ReadTimeout:       s.config.Server.GetEffectiveReadTimeout(), // 缺省 120s，per-host 覆盖
+		WriteTimeout:      1800 * time.Second,                        // P2-42: 限制写响应的时间（兼容长响应如 SSE，支持 30 分钟流式输出）
+		IdleTimeout:       120 * time.Second,                         // 回收空闲 keep-alive 连接
 		// F1.6（内部PRD §4.1.6）：请求头 1MB 收紧为 32KB（缺省），
 		// 可经 server.max_header_bytes 配置
 		MaxHeaderBytes: s.config.Server.GetEffectiveMaxHeaderBytes(),
@@ -1084,10 +1084,10 @@ func (s *Server) startHTTPSServer(port int, hosts []config.HostConfig) error {
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           engine,
 		TLSConfig:         tlsConfig,
-		ReadHeaderTimeout: 60 * time.Second,   // Slowloris 防护：限制读取请求头的时间
-		ReadTimeout:       120 * time.Second,  // P2-42: 限制读取完整请求的时间（含 body）
-		WriteTimeout:      1800 * time.Second, // P2-42: 限制写响应的时间（支持 30 分钟流式输出）
-		IdleTimeout:       120 * time.Second,  // 回收空闲 keep-alive 连接
+		ReadHeaderTimeout: 60 * time.Second,                          // Slowloris 防护：限制读取请求头的时间
+		ReadTimeout:       s.config.Server.GetEffectiveReadTimeout(), // 缺省 120s，per-host 覆盖
+		WriteTimeout:      1800 * time.Second,                        // P2-42: 限制写响应的时间（支持 30 分钟流式输出）
+		IdleTimeout:       120 * time.Second,                         // 回收空闲 keep-alive 连接
 		// F1.6：同 startHTTPServer，1MB 收紧为 32KB（缺省）
 		MaxHeaderBytes: s.config.Server.GetEffectiveMaxHeaderBytes(),
 	}
@@ -1271,7 +1271,7 @@ func (s *Server) handleRequestForPort(c *gin.Context, hosts []config.HostConfig)
 	// ★F3（内部PRD §4.3.3）：Host 规范形态匹配——大小写/尾点/带端口变体
 	// 统一归一化后再比对配置名（配置名已在 LoadConfig in-place 归一化），防变体
 	// Host 落入通配兜底绕过密码门/IP 白名单。只改局部变量，不回写 r.Host——
-	// preserve_host_header / frp customDomains / X-Forwarded-Host 透传不受影响。
+	// preserve_host_header / X-Forwarded-Host 透传不受影响。
 	// 非 ASCII Host 归一后保持原样（配置名强制 ASCII）→ 自然 404 fail-closed。
 	host := netutil.CanonicalHost(r.Host)
 
@@ -1318,6 +1318,19 @@ func (s *Server) handleRequestForPort(c *gin.Context, hosts []config.HostConfig)
 			logger.NewField("path", r.URL.Path))
 		c.String(http.StatusNotFound, "Not Found")
 		return
+	}
+
+	// per-host 整请求读超时：进入 host 后、代理前覆盖本请求的
+	// 读截止时间。HTTP/1.1 作用于当前请求；HTTP/2 由 http2responseWriter.SetReadDeadline
+	// 按 stream 设置，不影响同连接其它 stream。未配置的 host 继承 server 缺省 120s，
+	// 保留 Slowloris 防护。WebSocket 升级后连接由 hijack 接管，不能继承读截止时间。
+	if !netutil.IsWebSocketUpgrade(r) {
+		effectiveReadTimeout := matchedHost.GetEffectiveReadTimeout(s.config.Server.GetEffectiveReadTimeout())
+		if err := http.NewResponseController(c.Writer).SetReadDeadline(time.Now().Add(effectiveReadTimeout)); err != nil {
+			s.logger.Warn("设置 per-host 读超时失败",
+				logger.NewField("request_host", host),
+				logger.NewField("error", err.Error()))
+		}
 	}
 
 	// 逐条目跳转 + HSTS 单点下发（内部总体方案 W3-2 / 决策 D8）：位于 host 匹配
@@ -1481,18 +1494,18 @@ func (s *Server) handleRequestForPort(c *gin.Context, hosts []config.HostConfig)
 
 	// WAF inspects the decompressed plaintext request
 	// WAF applies to all requests including WebSocket; intercept403Writer implements Hijack
-	if wafInstance, exists := s.wafByHost[matchedHost.Name]; exists {
-		handler = wafInstance.WrapHandler(handler, matchedHost.Name)
+	_, wafActive := s.wafByHost[matchedHost.Name]
+	if wafActive {
+		handler = s.wafByHost[matchedHost.Name].WrapHandler(handler, matchedHost.Name)
 	}
 
 	// Decompress gzip/deflate request bodies before WAF inspection
 	// Must wrap outside WAF so WAF sees plaintext body, not gzip ciphertext
 	// F5（内部PRD §4.5）：解压策略按 host 注入——解压窗口（F1.5，缺省
-	// 1MB 与 SecRequestBodyLimit 对齐）与编码放行清单（br/zstd 透传，其余 415）
-	handler = middleware.DecompressRequestHandler(handler, middleware.DecompressPolicy{
-		MaxDecompressedBytes:    matchedHost.GetEffectiveMaxDecompressedRequestBody(),
-		AllowedContentEncodings: matchedHost.AllowedContentEncodings,
-	})
+	// 1MB 与 SecRequestBodyLimit 对齐）与编码放行清单（br/zstd 透传，其余 415）。
+	// WAF 未生效（生产按纪律全局关闭）时没有正文检测，编码策略失去意义：
+	// 未知编码原样透传，避免 aws-chunked 等正常上传帧被误杀成 415。
+	handler = middleware.DecompressRequestHandler(handler, buildDecompressPolicy(matchedHost, s.config.WAF, wafActive))
 
 	// Apply gzip middleware if enabled - gzip last (compresses response)
 	// WebSocket requests skip gzip because it buffers response data, breaking Hijack
@@ -1502,6 +1515,24 @@ func (s *Server) handleRequestForPort(c *gin.Context, hosts []config.HostConfig)
 
 	// Process request
 	handler.ServeHTTP(c.Writer, r)
+}
+
+// buildDecompressPolicy 按 host 与 WAF 生效状态构造请求体解压策略。
+//   - WAF 未生效：PassthroughUnknown=true——没有正文检测，编码策略不适用，
+//     未知编码原样透传（否则 boto3 的 aws-chunked 上传会被 415）；
+//   - WAF 生效且 host 关闭 request_body_access：追加 aws-chunked 透传——
+//     它是 AWS SDK 分块上传帧而非压缩编码，SC 原生解码，正文本就不扫描；
+//   - 其余保持 F5 fail-close 语义（仅放行显式 allowed_content_encodings）。
+func buildDecompressPolicy(host *config.HostConfig, globalWAF config.WAFConfig, wafActive bool) middleware.DecompressPolicy {
+	allowed := host.AllowedContentEncodings
+	if wafActive && !host.GetEffectiveWAFConfig(globalWAF).GetRequestBodyAccess() {
+		allowed = append(append([]string(nil), allowed...), middleware.ContentEncodingAWSChunked)
+	}
+	return middleware.DecompressPolicy{
+		MaxDecompressedBytes:    host.GetEffectiveMaxDecompressedRequestBody(),
+		AllowedContentEncodings: allowed,
+		PassthroughUnknown:      !wafActive,
+	}
 }
 
 // RobotsDenyAllContent is the forced robots.txt body injected by infra-gate

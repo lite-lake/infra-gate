@@ -105,7 +105,7 @@ func (a *AdminServer) buildEngine() *gin.Engine {
 
 	// F13.4（内部PRD §4.13.4）：访问审计日志——分级全量（admin QPS 极低不采样）：
 	// 认证成功 Info（对齐 shipper record 命名）、401/403/429 与 5xx Warn 补全字段、
-	// 免认证探针 Debug（防 kuma 刷屏）；绝不记录 X-API-Key 本身
+	// 免认证探针 Debug（防探针刷屏）；绝不记录 X-API-Key 本身
 	engine.Use(a.accessLogMiddleware())
 
 	a.registerRoutes(engine)
@@ -296,7 +296,7 @@ func (a *AdminServer) securityHeadersMiddleware() gin.HandlerFunc {
 // 页面路由（/、/sites、/certs、/waf、/blacklist）、/login、/logout 与静态资源全部拆除，访问返回 404。
 func (a *AdminServer) registerRoutes(engine *gin.Engine) {
 	// 免认证健康检查端点（与 lite-backend /api/health、/api/ready 对齐）：
-	// 不走认证，供 Uptime Kuma 等监控探测。仍需通过全局 host 校验（Host = LITE_ADMIN_DOMAIN）
+	// 不走认证，供 OC 统一监控等监控探测。仍需通过全局 host 校验（Host = LITE_ADMIN_DOMAIN）
 	engine.GET("/api/health", a.handleHealth)
 	engine.GET("/api/ready", a.handleReady)
 	// shipper 状态探针（内部PRD §6.1）：与 health/ready 同级免认证——
@@ -319,7 +319,7 @@ func (a *AdminServer) registerRoutes(engine *gin.Engine) {
 	}
 }
 
-// probePaths 免认证探针路径（审计日志 Debug 级，防 kuma 刷屏）
+// probePaths 免认证探针路径（审计日志 Debug 级，防探针刷屏）
 var probePaths = map[string]bool{
 	"/api/health":         true,
 	"/api/ready":          true,

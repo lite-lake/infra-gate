@@ -112,26 +112,6 @@ hosts:
 
 适用场景：服务仅需通过 EasyTier mesh 虚拟网（按环境规划内网网段，如 dev / prod 各一段）访问，拒绝公网来源。健康检查直连后端（不经 host 路由），不受 `allowed_ips` 影响。
 
-#### 作为 frp 隧道入口
-
-infra-gate 可作为 frp 隧道的入口网关，实现公网到内网的 HTTP 穿透。在此场景下，yamlops 会自动为隧道路由生成 host 条目，使用以下特殊配置：
-
-```yaml
-hosts:
-  - name: pay-dev.example.net       # 隧道域名
-    backend:
-      - "http://frps-node2:80"       # 指向 frps 容器的 vhost_http_port
-    preserve_host_header: true      # 必须保留 Host 头（frps 依赖它匹配隧道）
-    health_check_enabled: false     # 隧道路由禁用健康检查
-```
-
-> 这些 host 条目由 yamlops 根据 `tunnel-server` 的 `tunnel_routes` 自动注入，无需手动配置。由配套部署工具按隧道服务的 tunnel_routes 自动注入。
-
-架构流程：
-```
-外部 HTTPS 请求 → gate prod (TLS 终止 + WAF) → frps (按 Host 头路由) → TLS 隧道 → frpc → gate dev → 业务服务
-```
-
 ### SSL 证书配置 (`ssl` / `ssl_config`)
 
 支持全局配置（`ssl`）和虚拟主机级覆盖（`hosts[].ssl_config`），支持本地和远程两种模式：
@@ -377,7 +357,7 @@ curl -H 'X-API-Key: new-key-base64url' https://gate.example.cn:30443/api/certs
 
 ### 免认证健康检查
 
-Admin 服务启用后，自动暴露以下免认证健康检查端点（供 Uptime Kuma / Docker HEALTHCHECK 等监控探测，与 lite-backend 的 `/api/health`、`/api/ready` 对齐）：
+Admin 服务启用后，自动暴露以下免认证健康检查端点（供 OC 统一监控 / Docker HEALTHCHECK 等监控探测，与 lite-backend 的 `/api/health`、`/api/ready` 对齐）：
 
 | 端点 | 类型 | 说明 |
 |------|------|------|
@@ -493,6 +473,6 @@ infra-gate/
 
 ## 技术信息
 
-- **语言**: Go 1.26.10
+- **语言**: Go 1.26.11
 - **主要依赖**: Gin (Web 框架)、Coraza v3 (WAF 引擎)、go-yaml (YAML 解析)、golang.org/x/net (HTTP/2)
 - **安全特性**: TLS 1.2+ 强密码套件、Slowloris 防护、1MB 请求头限制、WAF fail-closed

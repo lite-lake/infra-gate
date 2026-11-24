@@ -41,7 +41,7 @@ type AdminConfig struct {
 
 // DefaultAdminAllowedIPs admin 允许名单缺省值（M4/决策 D3）：私网 + 回环——
 // 127/8、::1/128、10/8、172.16/12、192.168/16，覆盖 EasyTier mesh 两段
-// （dev 10.71.0.0/24 / prod 10.72.0.0/24）；mesh 内 Kuma 探活 / AC 轮询不受影响，
+// （dev 10.71.0.0/24 / prod 10.72.0.0/24）；mesh 内 OC 监控探活 / AC 轮询不受影响，
 // 公网直连 admin 端口默认 403
 func DefaultAdminAllowedIPs() []string {
 	return []string{

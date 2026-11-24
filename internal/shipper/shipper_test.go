@@ -416,7 +416,7 @@ func TestDisabledStatusSnapshot(t *testing.T) {
 	}
 
 	// JSON 序列化契约：enabled:false 与 last_success_send_at:null 必须如实输出
-	//（Uptime Kuma json-query 断言依据）
+	//（OC 监控 json-query 断言依据）
 	b, err := json.Marshal(snap)
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)

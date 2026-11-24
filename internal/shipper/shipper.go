@@ -247,7 +247,7 @@ func (s *Shipper) appendAvailable(pending []Record) []Record {
 }
 
 // StatusSnapshot shipper 状态快照（admin 只读端点响应体，内部PRD §6.1）。
-// C2 网关通道变暗哨兵：进程面自报真相，供 Uptime Kuma json-query 监控断言
+// C2 网关通道变暗哨兵：进程面自报真相，供 OC 统一监控 json-query 断言
 // （enabled=false 的"组件消失"是有效状态而非错误——端点仍 200，由监控断言失败产生告警，
 // 避免 404/500 混入基础设施故障噪音）。
 type StatusSnapshot struct {
@@ -257,7 +257,7 @@ type StatusSnapshot struct {
 	SentTotal    uint64 `json:"sent_total"`
 	DroppedTotal uint64 `json:"dropped_total"`
 	// NormalizedDropped F12：归一化后仍超 4KB 契约被丢弃的记录数
-	//（对 Uptime Kuma json-query 向后兼容：additive 字段）
+	//（对 OC 监控 json-query 向后兼容：additive 字段）
 	NormalizedDropped uint64 `json:"normalized_dropped"`
 	LastSuccessSendAt *int64 `json:"last_success_send_at"` // unix 毫秒；null=从未成功发送
 	BufferPending     int    `json:"buffer_pending"`

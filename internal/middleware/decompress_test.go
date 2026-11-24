@@ -159,6 +159,43 @@ func TestDecompressAllowlistPassthrough(t *testing.T) {
 	}
 }
 
+// TestDecompressPassthroughUnknown WAF 未生效时（PassthroughUnknown=true）
+// 未知编码原样透传：生产 WAF 关闭场景下 boto3 的 aws-chunked 上传不得 415。
+func TestDecompressPassthroughUnknown(t *testing.T) {
+	policy := DecompressPolicy{MaxDecompressedBytes: 1 << 20, PassthroughUnknown: true}
+	req := httptest.NewRequest(http.MethodPut, "/api/s3/bucket/key", bytes.NewReader([]byte("aws-chunked-frame")))
+	req.Header.Set("Content-Encoding", ContentEncodingAWSChunked)
+	w := httptest.NewRecorder()
+	var gotBody, gotEnc string
+	DecompressRequestHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody, gotEnc = string(b), r.Header.Get("Content-Encoding")
+	}), policy).ServeHTTP(w, req)
+	if w.Code != http.StatusOK || gotBody != "aws-chunked-frame" || gotEnc != ContentEncodingAWSChunked {
+		t.Errorf("passthrough unknown: code=%d body=%q enc=%q", w.Code, gotBody, gotEnc)
+	}
+}
+
+// TestDecompressAWSChunkedAllowlist 关闭正文扫描的 host（WAF 生效时由 server
+// 追加 aws-chunked）应原样透传。
+func TestDecompressAWSChunkedAllowlist(t *testing.T) {
+	policy := DecompressPolicy{
+		MaxDecompressedBytes:    1 << 20,
+		AllowedContentEncodings: []string{ContentEncodingAWSChunked},
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/s3/bucket/key", bytes.NewReader([]byte("aws-chunked-frame")))
+	req.Header.Set("Content-Encoding", ContentEncodingAWSChunked)
+	w := httptest.NewRecorder()
+	var gotBody string
+	DecompressRequestHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+	}), policy).ServeHTTP(w, req)
+	if w.Code != http.StatusOK || gotBody != "aws-chunked-frame" {
+		t.Errorf("aws-chunked allowlist: code=%d body=%q", w.Code, gotBody)
+	}
+}
+
 func TestDecompressDisguisedGzip400(t *testing.T) {
 	policy := DecompressPolicy{MaxDecompressedBytes: 1 << 20}
 	// 声明 gzip 但数据非 gzip → 400 fail-close（存量行为维持）

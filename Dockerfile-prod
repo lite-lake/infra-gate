@@ -1,6 +1,6 @@
 # 多阶段构建
 # 基础镜像可用构建参数覆盖（内部构建用镜像站加速，公开构建用 docker.io 默认值）
-ARG GOLANG_IMAGE=docker.io/library/golang:1.26.10-alpine3.23
+ARG GOLANG_IMAGE=docker.io/library/golang:1.26.11-alpine3.23
 ARG ALPINE_IMAGE=docker.io/library/alpine:3.22.3
 FROM ${GOLANG_IMAGE} AS builder
 

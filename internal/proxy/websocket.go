@@ -7,6 +7,7 @@ import (
 	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,56 @@ import (
 	"github.com/lite-lake/infra-gate/internal/netutil"
 	"github.com/lite-lake/infra-gate/internal/trace"
 )
+
+// maxRelayBodyBytes 限制透传的非 101 响应体大小：错误页/JSON 足够，
+// 防止异常后端的超大响应拖垮网关内存。超限截断（Content-Length 按实际字节重写）。
+const maxRelayBodyBytes = 64 * 1024
+
+// UpstreamNonSwitchingResponse 承载 WebSocket 升级时后端返回的非 101 正常 HTTP
+// 响应，handleWebSocket 据此把响应原样透传给客户端而非合成 502。
+type UpstreamNonSwitchingResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+func (e *UpstreamNonSwitchingResponse) Error() string {
+	return fmt.Sprintf("backend returned status %d instead of 101", e.StatusCode)
+}
+
+// relayUpstreamResponse 把后端对升级请求的非 101 响应原样写回客户端（客户端连接
+// 已 hijack，直接写裸连接）。跳过 hop-by-hop 与长度相关头，Content-Length 按实际
+// 读取到的响应体重写；补 Connection: close 终止本次 HTTP/1.1 会话。
+func relayUpstreamResponse(clientConn net.Conn, relay *UpstreamNonSwitchingResponse, traceId string) {
+	var response bytes.Buffer
+	statusText := http.StatusText(relay.StatusCode)
+	if statusText == "" {
+		statusText = "Unknown"
+	}
+	fmt.Fprintf(&response, "HTTP/1.1 %d %s\r\n", relay.StatusCode, statusText)
+	for key, values := range relay.Header {
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "connection" || lowerKey == "keep-alive" ||
+			lowerKey == "proxy-connection" || lowerKey == "transfer-encoding" ||
+			lowerKey == "upgrade" || lowerKey == "trailer" ||
+			lowerKey == "content-length" ||
+			// trace 头不透传：链式部署下上游 relay 响应已带各自 trace 头，
+			// 原样复制会逐跳累积多头；与 101 路径一致只写本跳单值（下方）
+			lowerKey == "x-lite-gate-trace-id" {
+			continue
+		}
+		for _, value := range values {
+			fmt.Fprintf(&response, "%s: %s\r\n", key, value)
+		}
+	}
+	fmt.Fprintf(&response, "Content-Length: %d\r\n", len(relay.Body))
+	if traceId != "" {
+		fmt.Fprintf(&response, "X-Lite-Gate-Trace-Id: %s\r\n", traceId)
+	}
+	fmt.Fprintf(&response, "Connection: close\r\n\r\n")
+	response.Write(relay.Body)
+	clientConn.Write(response.Bytes())
+}
 
 // handleWebSocketUpgrade handles the WebSocket handshake with the backend
 func (p *Proxy) handleWebSocketUpgrade(r *http.Request, backendURL *url.URL, traceId string) (net.Conn, *bufio.Reader, *http.Response, error) {
@@ -196,8 +247,21 @@ func (p *Proxy) handleWebSocketUpgrade(r *http.Request, backendURL *url.URL, tra
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
+		// 非 101 = 后端以正常 HTTP 语义拒绝升级（401/404/426 等）。读取响应体后
+		// 作为可透传错误返回，由 handleWebSocket 原样转发给客户端（与
+		// httputil.ReverseProxy 行为一致）：客户端依据真实状态码决策
+		//（如 Bitwarden hub token 失效应收到 401 去刷新凭证），而不是收到
+		// 合成 502 后误判网络故障触发重试风暴。
+		relay := &UpstreamNonSwitchingResponse{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRelayBodyBytes))
+		if readErr == nil {
+			relay.Body = body
+		}
 		conn.Close()
-		return nil, nil, nil, fmt.Errorf("backend returned status %d instead of 101", resp.StatusCode)
+		return nil, nil, nil, relay
 	}
 
 	// P2-18: 验证后端 101 响应中的 Upgrade 和 Connection 头
@@ -294,6 +358,18 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, backend 
 	// Connect to the backend and perform WebSocket handshake
 	backendConn, backendReader, backendResp, err := p.handleWebSocketUpgrade(r, backendURL, traceId)
 	if err != nil {
+		// 后端以正常 HTTP 语义拒绝升级（401/404/426 等）：原样透传响应，
+		// 客户端依据真实状态码决策；传输层失败（dial/timeout/TLS）才走合成 502/504
+		var nonSwitching *UpstreamNonSwitchingResponse
+		if errors.As(err, &nonSwitching) {
+			loggerWithTrace.Warn("WebSocket upgrade rejected by backend, relaying response",
+				logger.NewField("backend", netutil.RedactURL(backend)),
+				logger.NewField("path", r.URL.Path),
+				logger.NewField("status", nonSwitching.StatusCode))
+			relayUpstreamResponse(clientConn, nonSwitching, traceId)
+			return
+		}
+
 		errType, _ := detectUpstreamErrorType(err)
 		statusCode := getHTTPStatusCodeForError(errType)
 		userMessage := getErrorMessageForType(errType)

@@ -141,6 +141,10 @@ func TestValidateAllowedContentEncodings(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("br/zstd should pass: %v", err)
 	}
+	cfg.Hosts[0].AllowedContentEncodings = []string{"br", ContentEncodingAWSChunked}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("aws-chunked should pass: %v", err)
+	}
 }
 
 func TestUpstreamPoolEffectiveValues(t *testing.T) {
